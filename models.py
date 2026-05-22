@@ -30,9 +30,15 @@ class ChordEncoder(nn.Module):
             nhead=4,
             num_layers=3,
             dropout=0.2,
+            use_chroma=False,
     ):
         super().__init__()
-        self.token_embedding = nn.Embedding(vocab_size, d_model)
+        self.use_chroma = use_chroma
+        if use_chroma:
+            self.token_embedding = nn.Linear(12, d_model)
+            self.token_embedding.embedding_dim = d_model
+        else:
+            self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.pos_encoder = PositionalEncoding(d_model, max_len=2048)
 
         encoder_layer = nn.TransformerEncoderLayer(
@@ -50,7 +56,7 @@ class ChordEncoder(nn.Module):
         x = self.token_embedding(input_ids)  # [batch_size, seq_len, d_model]
         x = self.pos_encoder(x)  # add positional encoding
 
-        B, T = input_ids.size()  # input: (B, T)
+        B, T = input_ids.size(0), input_ids.size(1)  # input: (B, T) or (B, T, 12)
 
         if attention_mask is not None:
             # Convert attention_mask (1=keep, 0=mask) to Bool mask where True=mask

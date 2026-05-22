@@ -1,6 +1,7 @@
 from torch.utils.data import Dataset
 from pathlib import Path
 import torch
+from chord_parser import parse_chord_progression
 
 
 class ChordMidiDataset(Dataset):
@@ -61,6 +62,7 @@ class ChordBassMelodyDataset(Dataset):
         bass_tokenizer,
         melody_tokenizer,
         max_length=128,
+        use_chroma=False,
     ):
         self.df = dataframe
         self.chord_tokenizer = chord_tokenizer
@@ -69,6 +71,7 @@ class ChordBassMelodyDataset(Dataset):
         self.chord_max_length = max_length
         self.bass_max_length = max_length
         self.melody_max_length = max_length
+        self.use_chroma = use_chroma
 
     def __len__(self):
         return len(self.df)
@@ -77,16 +80,26 @@ class ChordBassMelodyDataset(Dataset):
         row = self.df.iloc[idx]
 
         # Chord
-        chord_tokenized = self.chord_tokenizer.encode(row['chord_transposed'])
-        chord_input_ids, chord_attn_mask = chord_tokenized.ids, chord_tokenized.attention_mask
-        chord_pad_token = self.chord_tokenizer.token_to_id('[PAD]')
-        if len(chord_input_ids) < self.chord_max_length:
-            pad_len = self.chord_max_length - len(chord_input_ids)
-            chord_input_ids += [chord_pad_token] * pad_len
-            chord_attn_mask += [chord_pad_token] * pad_len
+        if self.use_chroma:
+            chord_chromas, chord_attn = parse_chord_progression(
+                row['chord_transposed'],
+                max_length=self.chord_max_length
+            )
+            chord_input_ids = torch.tensor(chord_chromas, dtype=torch.float32)
+            chord_attn_mask = torch.tensor(chord_attn, dtype=torch.float32)
         else:
-            chord_input_ids = chord_input_ids[:self.chord_max_length]
-            chord_attn_mask = chord_attn_mask[:self.chord_max_length]
+            chord_tokenized = self.chord_tokenizer.encode(row['chord_transposed'])
+            chord_ids, chord_attn = chord_tokenized.ids, chord_tokenized.attention_mask
+            chord_pad_token = self.chord_tokenizer.token_to_id('[PAD]')
+            if len(chord_ids) < self.chord_max_length:
+                pad_len = self.chord_max_length - len(chord_ids)
+                chord_ids += [chord_pad_token] * pad_len
+                chord_attn += [chord_pad_token] * pad_len
+            else:
+                chord_ids = chord_ids[:self.chord_max_length]
+                chord_attn = chord_attn[:self.chord_max_length]
+            chord_input_ids = torch.tensor(chord_ids, dtype=torch.long)
+            chord_attn_mask = torch.tensor(chord_attn, dtype=torch.long)
 
         # Bass
         bass_file_path = row['bass_path']
@@ -125,8 +138,8 @@ class ChordBassMelodyDataset(Dataset):
             # TODO: add EOS token if needed
 
         return {
-            "chord_input_ids": torch.tensor(chord_input_ids, dtype=torch.long),
-            "chord_attention_mask": torch.tensor(chord_attn_mask, dtype=torch.long),
+            "chord_input_ids": chord_input_ids,
+            "chord_attention_mask": chord_attn_mask,
             "bass_input_ids": bass_tensor,
             "melody_input_ids": melody_tensor,
         }

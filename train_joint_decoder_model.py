@@ -14,11 +14,13 @@ from chord_to_midi_dataset import ChordBassMelodyDataset
 from tokenizers import Tokenizer
 import argparse
 
-parser = argparse.ArgumentParser(description="Arguments for controlling training independent.")
+parser = argparse.ArgumentParser(description="Arguments for controlling training joint decoder.")
 parser.add_argument("--piece_or_theme", choices=["piece", "theme"], help="which train/test split")
+parser.add_argument("--use_chroma", action="store_true", help="use 12-dimensional chroma vectors for chords")
 args = parser.parse_args()
 
 piece_or_theme = args.piece_or_theme
+use_chroma = args.use_chroma
 
 def extract_prefix(filename):
     # Remove extension and everything after '_simplified'
@@ -114,18 +116,25 @@ def main():
         bass_tokenizer=bass_tokenizer,
         melody_tokenizer=melody_tokenizer,
         max_length=128,
+        use_chroma=use_chroma,
     )
     batch_size = 8
     train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size)
 
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
 
     encoder = ChordEncoder(
         chord_tokenizer.get_vocab_size(),
         d_model=256,
         num_layers=1,
-        nhead=2
+        nhead=2,
+        use_chroma=use_chroma,
     )
 
     decoder = RemiDecoder(
