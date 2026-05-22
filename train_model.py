@@ -114,7 +114,12 @@ def main():
     train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size)
 
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
 
     encoder = ChordEncoder(
         chord_tokenizer.get_vocab_size(),

@@ -1,0 +1,35 @@
+# System files
+.DS_Store
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Local CLI environment
+.antigravitycli/
+
+# Model Checkpoints (very large files)
+checkpoints/
+*_train_checkpoints/
+*_theme_train_checkpoints/
+
+# Training logs
+*.log
+
+# Generated samples and midis
+samples/
+
+# Local mock/untracked datasets (MIDI directories)
+new_simplified_bass_files_c_midi/
+new_simplified_melody_files_c_midi/
+
+# Generated chords, tokenizers and datasets
+test_chords_edited.txt
+chords_edited.txt
+*.csv
+*.tsv
+chord_tokenizer.json
+test_chord_tokenizer.json
+
+# Local benchmark/scratch scripts
+test_metal_epoch.py
