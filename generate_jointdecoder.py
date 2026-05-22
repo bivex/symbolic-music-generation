@@ -7,29 +7,46 @@ from tokenizers import Tokenizer
 import pandas as pd
 from pathlib import Path
 import argparse
+from chord_parser import parse_chord_progression
 
 parser = argparse.ArgumentParser(description="Arguments for controlling generation.")
-parser.add_argument("--piece_or_theme", choices=["piece", "theme"], help="which train/test split")
-parser.add_argument("--epoch", type=int, choices=[0, 50, 100, 150, 200, 250, 300, 350, 400], help="which epoch checkpoint")
+parser.add_argument(
+    "--piece_or_theme", choices=["piece", "theme"], help="which train/test split"
+)
+parser.add_argument(
+    "--epoch",
+    type=int,
+    choices=[0, 50, 100, 150, 200, 250, 300, 350, 400],
+    help="which epoch checkpoint",
+)
+parser.add_argument(
+    "--use_chroma",
+    action="store_true",
+    help="use 12-dimensional chroma vectors for chords",
+)
 args = parser.parse_args()
 
 piece_or_theme = args.piece_or_theme
 epoch = args.epoch
+use_chroma = args.use_chroma
+
 
 def extract_prefix(filename):
     # Remove extension and everything after '_simplified'
     stem = Path(filename).stem
-    return stem.split('_simplified')[0]
+    return stem.split("_simplified")[0]
+
 
 def construct_test_df(
-    chords_csv_path,
-    melody_folder,
-    bass_folder,
-    output_csv_path=None
+    chords_csv_path, melody_folder, bass_folder, output_csv_path=None
 ):
     df = pd.read_csv(chords_csv_path)
-    melody_files = {extract_prefix(f): str(f.resolve()) for f in Path(melody_folder).glob("*.mid")}
-    bass_files = {extract_prefix(f): str(f.resolve()) for f in Path(bass_folder).glob("*.mid")}
+    melody_files = {
+        extract_prefix(f): str(f.resolve()) for f in Path(melody_folder).glob("*.mid")
+    }
+    bass_files = {
+        extract_prefix(f): str(f.resolve()) for f in Path(bass_folder).glob("*.mid")
+    }
 
     df["melody_path"] = df["long_name"].map(melody_files)
     df["bass_path"] = df["long_name"].map(bass_files)
@@ -42,10 +59,13 @@ def construct_test_df(
     print(f"Data Length: {len(df)}")
     return df
 
+
 def main():
     # set based on argparse
     if piece_or_theme == "piece":
-        checkpoint_loc = f"checkpoints/chord2jointdecoder_train_checkpoints/chord2jointdecoder_epoch_{epoch}.pt"
+        checkpoint_loc = (
+            f"chord2jointdecoder_train_checkpoints/chord2jointdecoder_epoch_{epoch}.pt"
+        )
         samples_loc_stem = "samples/chord2jointdecoder_samples"
         my_chords_csv_path = "test_chords_edited-key-tranposed.csv"
         my_output_csv_path = "test_joint.csv"
@@ -58,17 +78,17 @@ def main():
         raise ValueError(f"Unknown piece or theme type: {piece_or_theme}")
 
     TOKENIZER_PARAMS = {
-    "pitch_range": (21, 109),
-    "beat_res": {(0, 4): 8, (4, 12): 4},
-    "num_velocities": 32,
-    "special_tokens": ["PAD", "BOS", "EOS", "MASK"],
-    "use_chords": False,
-    "use_rests": True,
-    "use_tempos": True,
-    "use_time_signatures": False,
-    "use_programs": False,
-    "num_tempos": 32,  # number of tempo bins
-    "tempo_range": (40, 250),  # (min, max)
+        "pitch_range": (21, 109),
+        "beat_res": {(0, 4): 8, (4, 12): 4},
+        "num_velocities": 32,
+        "special_tokens": ["PAD", "BOS", "EOS", "MASK"],
+        "use_chords": False,
+        "use_rests": True,
+        "use_tempos": True,
+        "use_time_signatures": False,
+        "use_programs": False,
+        "num_tempos": 32,  # number of tempo bins
+        "tempo_range": (40, 250),  # (min, max)
     }
     config = TokenizerConfig(**TOKENIZER_PARAMS)
     bass_tokenizer = REMI(config)
@@ -88,7 +108,8 @@ def main():
         chord_tokenizer.get_vocab_size(),
         d_model=256,
         num_layers=1,
-        nhead=2
+        nhead=2,
+        use_chroma=use_chroma,
     )
 
     decoder = RemiDecoder(
@@ -96,14 +117,20 @@ def main():
         d_model=256,
         num_layers=6,
         nhead=8,
-        include_linear_head=False
+        include_linear_head=False,
     )
 
-
-    model = Chord2JointDecoderMidiTransformer(encoder = encoder, decoder = decoder, d_model = decoder.d_model, vocab_size=decoder.vocab_size)
+    model = Chord2JointDecoderMidiTransformer(
+        encoder=encoder,
+        decoder=decoder,
+        d_model=decoder.d_model,
+        vocab_size=decoder.vocab_size,
+    )
 
     max_length = 128
-    checkpoint = torch.load(checkpoint_loc, map_location=device)#torch.load(f"chord2jointdecoder_train_checkpoints/chord2jointdecoder_epoch_{epoch_to_load}.pt", map_location=device)
+    checkpoint = torch.load(
+        checkpoint_loc, map_location=device
+    )  # torch.load(f"chord2jointdecoder_train_checkpoints/chord2jointdecoder_epoch_{epoch_to_load}.pt", map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     model.to(device)
@@ -114,7 +141,7 @@ def main():
         chords_csv_path=my_chords_csv_path,
         bass_folder="new_simplified_bass_files_c_midi",
         melody_folder="new_simplified_melody_files_c_midi",
-        output_csv_path=my_output_csv_path
+        output_csv_path=my_output_csv_path,
     )
     print("Test data (chord progressions) loaded!")
 
@@ -125,26 +152,34 @@ def main():
 
     print("START GENERATING..")
     for idx, row in test_data.iterrows():
-        tokenized = chord_tokenizer.encode(
-            row['chord_transposed'],
-        )
-        input_ids, attn_mask = tokenized.ids, tokenized.attention_mask
-
-        chord_pad_token = chord_tokenizer.token_to_id('[PAD]')
-        if len(input_ids) < max_length:
-            pad_len = max_length - len(input_ids)
-            input_ids = input_ids + ([chord_pad_token] * pad_len)
-            attn_mask = attn_mask + ([chord_pad_token] * pad_len)
+        if use_chroma:
+            chromas, attn_mask = parse_chord_progression(
+                row["chord_transposed"], max_length=max_length
+            )
+            chroma_tensors = [torch.tensor(c, dtype=torch.float32) for c in chromas]
+            input_ids = torch.stack(chroma_tensors).unsqueeze(0).to(device)
+            attn_mask = (
+                torch.tensor(attn_mask, dtype=torch.float32).unsqueeze(0).to(device)
+            )
         else:
-            input_ids = input_ids[:max_length]
-            attn_mask = attn_mask[:max_length]
+            tokenized = chord_tokenizer.encode(
+                row["chord_transposed"],
+            )
+            input_ids, attn_mask = tokenized.ids, tokenized.attention_mask
 
-        input_ids = torch.tensor(input_ids, dtype=torch.long).to(device)
-        attn_mask = torch.tensor(attn_mask, dtype=torch.long).to(device)
-        input_ids = input_ids.unsqueeze(0)
-        attn_mask = attn_mask.unsqueeze(0)
+            chord_pad_token = chord_tokenizer.token_to_id("[PAD]")
+            if len(input_ids) < max_length:
+                pad_len = max_length - len(input_ids)
+                input_ids = input_ids + ([chord_pad_token] * pad_len)
+                attn_mask = attn_mask + ([chord_pad_token] * pad_len)
+            else:
+                input_ids = input_ids[:max_length]
+                attn_mask = attn_mask[:max_length]
 
-
+            input_ids = torch.tensor(input_ids, dtype=torch.long).to(device)
+            attn_mask = torch.tensor(attn_mask, dtype=torch.long).to(device)
+            input_ids = input_ids.unsqueeze(0)
+            attn_mask = attn_mask.unsqueeze(0)
 
         # generate samples
         bass_generated_ids, melody_generated_ids = model.generate(
@@ -155,25 +190,15 @@ def main():
             max_len=max_length,
             decoding_strategy="top_p",
             top_p=0.9,
-            device=device
+            device=device,
         )
-        name = row['long_name']
+        name = row["long_name"]
 
         path = f"{samples_loc_stem}/generated_midis_{epoch}/bass/{name}_generated.mid"
-        convert_to_midi_files(
-            bass_generated_ids,
-            bass_tokenizer,
-            idx+1,
-            path
-        )
+        convert_to_midi_files(bass_generated_ids, bass_tokenizer, idx + 1, path)
 
         path = f"{samples_loc_stem}/generated_midis_{epoch}/melody/{name}_generated.mid"
-        convert_to_midi_files(
-            melody_generated_ids,
-            melody_tokenizer,
-            idx+1,
-            path
-        )
+        convert_to_midi_files(melody_generated_ids, melody_tokenizer, idx + 1, path)
 
 
 if __name__ == "__main__":

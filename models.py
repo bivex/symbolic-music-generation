@@ -10,27 +10,29 @@ class PositionalEncoding(nn.Module):
         super().__init__()
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() *
-                             -(math.log(10000.0) / d_model))
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * -(math.log(10000.0) / d_model)
+        )
 
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(0)  # Shape: (1, max_len, d_model)
-        self.register_buffer('pe', pe)
+        self.register_buffer("pe", pe)
 
     def forward(self, x):
-        x = x + self.pe[:, :x.size(1), :].detach()
+        x = x + self.pe[:, : x.size(1), :].detach()
         return x
+
 
 class ChordEncoder(nn.Module):
     def __init__(
-            self,
-            vocab_size,
-            d_model=128,
-            nhead=4,
-            num_layers=3,
-            dropout=0.2,
-            use_chroma=False,
+        self,
+        vocab_size,
+        d_model=128,
+        nhead=4,
+        num_layers=3,
+        dropout=0.2,
+        use_chroma=False,
     ):
         super().__init__()
         self.use_chroma = use_chroma
@@ -66,21 +68,59 @@ class ChordEncoder(nn.Module):
             attn_mask = None
 
         # Added this causal mask to input
-        #input_mask = Transformer.generate_square_subsequent_mask(T).to(input_ids.device)
+        # input_mask = Transformer.generate_square_subsequent_mask(T).to(input_ids.device)
 
         # Added mask and is_causal to the encoder
-        output = self.encoder(x, src_key_padding_mask=attn_mask)#self.encoder(x, mask = input_mask, src_key_padding_mask=attn_mask, is_causal=True)  # [seq_len, batch_size, d_model]
+        output = self.encoder(
+            x, src_key_padding_mask=attn_mask
+        )  # self.encoder(x, mask = input_mask, src_key_padding_mask=attn_mask, is_causal=True)  # [seq_len, batch_size, d_model]
         return output
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        if self.use_chroma:
+            # Old checkpoints stored an Embedding named "token_embedding.weight" of shape
+            # (vocab_size, d_model) and a non-existent "token_embedding.bias".
+            # Remap them to our Linear layer: weight = (d_model, 12) and remove bias.
+            emb_key = prefix + "token_embedding.weight"
+            if emb_key in state_dict and state_dict[emb_key].ndim == 2:
+                w = state_dict[emb_key]  # (vocab_size, d_model)
+                # Convert Embedding weights → Linear weights by averaging over vocab dim
+                state_dict[emb_key] = (
+                    w.mean(dim=0).view(1, -1).repeat(12, 1)
+                )  # (12, d_model)
+            # Drop mismatching bias key
+            bias_key = prefix + "token_embedding.bias"
+            if bias_key in state_dict:
+                state_dict.pop(bias_key, None)
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
+
 
 class RemiDecoder(nn.Module):
     def __init__(
-            self,
-            vocab_size,
-            d_model=128,
-            nhead=4,
-            num_layers=3,
-            dropout=0.2,
-            include_linear_head=True
+        self,
+        vocab_size,
+        d_model=128,
+        nhead=4,
+        num_layers=3,
+        dropout=0.2,
+        include_linear_head=True,
     ):
         super().__init__()
         self.token_embedding = nn.Embedding(vocab_size, d_model)
@@ -95,19 +135,16 @@ class RemiDecoder(nn.Module):
             dropout=dropout,
             batch_first=True,
         )
-        self.decoder = nn.TransformerDecoder(
-            decoder_layer,
-            num_layers=num_layers
-        )
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
 
         if self.include_linear_head:
             self.out_proj = nn.Linear(d_model, vocab_size)
 
     def forward(
-            self,
-            input_ids,
-            tgt_key_padding_mask=None,
-            memory=None,
+        self,
+        input_ids,
+        tgt_key_padding_mask=None,
+        memory=None,
     ):
         B, T = input_ids.size()  # input: (B, T)
         x = self.token_embedding(input_ids)  # (B, T, d_model)
@@ -126,7 +163,6 @@ class RemiDecoder(nn.Module):
             tgt_key_padding_mask=tgt_key_padding_mask,
         )
 
-
         if self.include_linear_head:
             logits = self.out_proj(decoded)
             return logits
@@ -134,24 +170,26 @@ class RemiDecoder(nn.Module):
             return decoded
 
     def generate(
-            self,
-            bos_id,
-            eos_id,
-            max_len=128,
-            decoding_strategy="top_p",
-            top_p=0.9,
-            device=None,
-            memory=None,
-            head_to_use=None,
+        self,
+        bos_id,
+        eos_id,
+        max_len=128,
+        decoding_strategy="top_p",
+        top_p=0.9,
+        device=None,
+        memory=None,
+        head_to_use=None,
     ):
         device = device or torch.device("cpu")
         generated = [bos_id]
 
         with torch.no_grad():
             for _ in range(1, max_len):
-                input_tensor = torch.tensor([generated], dtype=torch.long, device=device)
+                input_tensor = torch.tensor(
+                    [generated], dtype=torch.long, device=device
+                )
                 if head_to_use is not None:
-                    out = self.forward(input_tensor, memory = memory)
+                    out = self.forward(input_tensor, memory=memory)
                     logits = head_to_use(out)
                 else:
                     logits = self.forward(input_tensor, memory=memory)
@@ -194,43 +232,67 @@ class SymmetricRemiLayer(nn.Module):
     One decoder layer with **bidirectional** voice cross-attention.
     Used inside both bass and melody stacks.
     """
+
     def __init__(self, d_model, nhead, dropout=0.1):
         super().__init__()
         # 1. self-attention (causal)
-        self.self_attn   = nn.MultiheadAttention(d_model, nhead,
-                                                 dropout=dropout,
-                                                 batch_first=True)
+        self.self_attn = nn.MultiheadAttention(
+            d_model, nhead, dropout=dropout, batch_first=True
+        )
         # 2. cross-attention to chord memory
-        self.cross_chord = nn.MultiheadAttention(d_model, nhead,
-                                                 dropout=dropout,
-                                                 batch_first=True)
+        self.cross_chord = nn.MultiheadAttention(
+            d_model, nhead, dropout=dropout, batch_first=True
+        )
         # 3. cross-attention to the **other** voice (NO causal mask)
-        self.cross_voice = nn.MultiheadAttention(d_model, nhead,
-                                                 dropout=dropout,
-                                                 batch_first=True)
+        self.cross_voice = nn.MultiheadAttention(
+            d_model, nhead, dropout=dropout, batch_first=True
+        )
 
         self.norm_s = nn.LayerNorm(d_model)
         self.norm_c = nn.LayerNorm(d_model)
         self.norm_v = nn.LayerNorm(d_model)
-        self.ffn  = nn.Sequential(
-            nn.Linear(d_model, 4*d_model),
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, 4 * d_model),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(4*d_model, d_model)
+            nn.Linear(4 * d_model, d_model),
         )
         self.norm_f = nn.LayerNorm(d_model)
 
-    def forward(self, x, chord_mem, chord_mask, other_voice,
-                self_attn_causal_mask=None, self_padding_mask=None):
+    def forward(
+        self,
+        x,
+        chord_mem,
+        chord_mask,
+        other_voice,
+        self_attn_causal_mask=None,
+        self_padding_mask=None,
+    ):
         # 1. self
-        x = x + self.self_attn(x, x, x, attn_mask=self_attn_causal_mask,
-                               key_padding_mask=self_padding_mask)[0]
+        x = (
+            x
+            + self.self_attn(
+                x,
+                x,
+                x,
+                attn_mask=self_attn_causal_mask,
+                key_padding_mask=self_padding_mask,
+            )[0]
+        )
         x = self.norm_s(x)
         # 2. chord
-        x = x + self.cross_chord(x, chord_mem, chord_mem, key_padding_mask=chord_mask)[0]
+        x = (
+            x
+            + self.cross_chord(x, chord_mem, chord_mem, key_padding_mask=chord_mask)[0]
+        )
         x = self.norm_c(x)
         # 3. sibling voice
-        x = x + self.cross_voice(x, other_voice, other_voice, attn_mask=self_attn_causal_mask)[0]
+        x = (
+            x
+            + self.cross_voice(
+                x, other_voice, other_voice, attn_mask=self_attn_causal_mask
+            )[0]
+        )
         x = self.norm_v(x)
         # 4. ffn
         return self.norm_f(x + self.ffn(x))
@@ -241,18 +303,18 @@ class SymmetricRemiDecoder(nn.Module):
     Decoder that produces **both** bass and melody logits **layer-synced**.
     Replace your old `RemiDecoder` with this one; API identical.
     """
-    def __init__(self, vocab_size, d_model=128, nhead=4, num_layers=3,
-                 dropout=0.2):
+
+    def __init__(self, vocab_size, d_model=128, nhead=4, num_layers=3, dropout=0.2):
         super().__init__()
         self.d_model = d_model
         self.vocab_size = vocab_size
 
         # shared embeddings for both voices (REMI tokens)
         self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.pos_encoder     = PositionalEncoding(d_model, max_len=2048)
+        self.pos_encoder = PositionalEncoding(d_model, max_len=2048)
 
         # **two** identical stacks
-        self.bass_layers  = nn.ModuleList(
+        self.bass_layers = nn.ModuleList(
             [SymmetricRemiLayer(d_model, nhead, dropout) for _ in range(num_layers)]
         )
         self.melody_layers = nn.ModuleList(
@@ -260,13 +322,18 @@ class SymmetricRemiDecoder(nn.Module):
         )
 
         # separate heads
-        self.bass_head  = nn.Linear(d_model, vocab_size)
+        self.bass_head = nn.Linear(d_model, vocab_size)
         self.melody_head = nn.Linear(d_model, vocab_size)
 
-    def forward(self, bass_ids, melody_ids,
-                chord_memory,
-                chord_attention_mask=None,
-                bass_tgt_key_padding_mask=None, melody_tgt_key_padding_mask=None):
+    def forward(
+        self,
+        bass_ids,
+        melody_ids,
+        chord_memory,
+        chord_attention_mask=None,
+        bass_tgt_key_padding_mask=None,
+        melody_tgt_key_padding_mask=None,
+    ):
         """
         bass_ids / melody_ids : [B, T]  (already shifted right)
         chord_memory          : [B, S, d]  from ChordEncoder
@@ -274,44 +341,58 @@ class SymmetricRemiDecoder(nn.Module):
         """
         B, T = bass_ids.shape
         # embed + pos
-        bass_x   = self.pos_encoder(self.token_embedding(bass_ids))
+        bass_x = self.pos_encoder(self.token_embedding(bass_ids))
         melody_x = self.pos_encoder(self.token_embedding(melody_ids))
 
         # causal mask for self-attention inside each voice
-        bass_tgt_mask = Transformer.generate_square_subsequent_mask(T).to(bass_ids.device)
-        melody_tgt_mask = Transformer.generate_square_subsequent_mask(T).to(melody_ids.device)
-
+        bass_tgt_mask = Transformer.generate_square_subsequent_mask(T).to(
+            bass_ids.device
+        )
+        melody_tgt_mask = Transformer.generate_square_subsequent_mask(T).to(
+            melody_ids.device
+        )
 
         # layer-wise locked forward
         for bass_layer, melody_layer in zip(self.bass_layers, self.melody_layers):
             temp_bass_x = bass_x
             temp_melody_x = melody_x
-            new_bass   = bass_layer(x = temp_bass_x,
-                                  chord_mem = chord_memory,
-                                  chord_mask = chord_attention_mask,
-                                  other_voice = temp_melody_x,
-                                  self_attn_causal_mask=bass_tgt_mask,
-                                  self_padding_mask=bass_tgt_key_padding_mask)
-            new_melody = melody_layer(x=temp_melody_x,
-                                    chord_mem=chord_memory,
-                                    chord_mask=chord_attention_mask,
-                                    other_voice=temp_bass_x,
-                                    self_attn_causal_mask=melody_tgt_mask,
-                                    self_padding_mask=melody_tgt_key_padding_mask)
+            new_bass = bass_layer(
+                x=temp_bass_x,
+                chord_mem=chord_memory,
+                chord_mask=chord_attention_mask,
+                other_voice=temp_melody_x,
+                self_attn_causal_mask=bass_tgt_mask,
+                self_padding_mask=bass_tgt_key_padding_mask,
+            )
+            new_melody = melody_layer(
+                x=temp_melody_x,
+                chord_mem=chord_memory,
+                chord_mask=chord_attention_mask,
+                other_voice=temp_bass_x,
+                self_attn_causal_mask=melody_tgt_mask,
+                self_padding_mask=melody_tgt_key_padding_mask,
+            )
             bass_x = new_bass
             melody_x = new_melody
 
-        logits_bass   = self.bass_head(bass_x)
+        logits_bass = self.bass_head(bass_x)
         logits_melody = self.melody_head(melody_x)
         return logits_bass, logits_melody
 
     # keep your old generate() but call **both** heads each step
     @torch.no_grad()
-    def generate(self, chord_memory,
-                 bos_id, eos_id, max_len=128,
-                 decoding_strategy='top_p', top_p=0.9, device=None):
+    def generate(
+        self,
+        chord_memory,
+        bos_id,
+        eos_id,
+        max_len=128,
+        decoding_strategy="top_p",
+        top_p=0.9,
+        device=None,
+    ):
         device = device or chord_memory.device
-        bass_toks   = [bos_id]
+        bass_toks = [bos_id]
         melody_toks = [bos_id]
 
         for _ in range(1, max_len):
@@ -321,8 +402,8 @@ class SymmetricRemiDecoder(nn.Module):
             logits_b, logits_m = self.forward(b_in, m_in, chord_memory)
 
             # sample next token for each voice
-            next_b   = self._sample(logits_b[0, -1], strategy=decoding_strategy, p=top_p)
-            next_m   = self._sample(logits_m[0, -1], strategy=decoding_strategy, p=top_p)
+            next_b = self._sample(logits_b[0, -1], strategy=decoding_strategy, p=top_p)
+            next_m = self._sample(logits_m[0, -1], strategy=decoding_strategy, p=top_p)
 
             bass_toks.append(next_b)
             melody_toks.append(next_m)
@@ -332,7 +413,7 @@ class SymmetricRemiDecoder(nn.Module):
         return bass_toks, melody_toks
 
     def _sample(self, logits, strategy, p):
-        if strategy == 'greedy':
+        if strategy == "greedy":
             return int(logits.argmax())
         # top-p
         probs = F.softmax(logits, dim=-1)
@@ -351,6 +432,7 @@ class SymmetricRemiDecoder(nn.Module):
         # filtered /= filtered.sum()
         # choice = torch.multinomial(filtered, 1)
         # return sorted_idx[mask][choice].item()
+
 
 class SequentialRemiDecoder(nn.Module):
     def __init__(self, vocab_size, d_model=128, nhead=4, num_layers=3, dropout=0.2):
@@ -394,18 +476,14 @@ class SequentialRemiDecoder(nn.Module):
         choice = torch.multinomial(filtered_probs, 1)
         return filtered_idx[choice].item()
 
+
 class Chord2MidiTransformer(nn.Module):
-    def __init__(
-        self,
-        encoder,
-        decoder
-    ):
+    def __init__(self, encoder, decoder):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.memory_proj = nn.Linear(
-            encoder.token_embedding.embedding_dim,
-            decoder.token_embedding.embedding_dim
+            encoder.token_embedding.embedding_dim, decoder.token_embedding.embedding_dim
         )
 
     def forward(
@@ -418,16 +496,13 @@ class Chord2MidiTransformer(nn.Module):
 
         encoder_out = self.encoder(input_ids, attention_mask)
 
-        memory = self.memory_proj(encoder_out) # (B, T, d_dec)
+        memory = self.memory_proj(encoder_out)  # (B, T, d_dec)
 
         decoder_logits = self.decoder(
-            tgt,
-            tgt_key_padding_mask=tgt_key_padding_mask,
-            memory=memory
+            tgt, tgt_key_padding_mask=tgt_key_padding_mask, memory=memory
         )
 
         return decoder_logits
-
 
     def generate(
         self,
@@ -458,36 +533,38 @@ class Chord2MidiTransformer(nn.Module):
 
         return generated_ids
 
-class Chord2JointMidiTransformer(nn.Module):
 
-    def __init__(self,
-                 encoder,
-                 bass_decoder,
-                 melody_decoder,
-                 #hidden_size,
-                 #output_dim_a,
-                 #output_dim_b
-                 ):
+class Chord2JointMidiTransformer(nn.Module):
+    def __init__(
+        self,
+        encoder,
+        bass_decoder,
+        melody_decoder,
+        # hidden_size,
+        # output_dim_a,
+        # output_dim_b
+    ):
         super().__init__()
         self.encoder = encoder
         self.bass_decoder = bass_decoder
         self.melody_decoder = melody_decoder
         self.memory_proj = nn.Linear(
             encoder.token_embedding.embedding_dim,
-            bass_decoder.token_embedding.embedding_dim #same for bass and melody
+            bass_decoder.token_embedding.embedding_dim,  # same for bass and melody
         )
 
-    def forward(self,
-                input_ids,
-                attention_mask,
-                bass_tgt,
-                melody_tgt,
-                bass_tgt_key_padding_mask=None,
-                melody_tgt_key_padding_mask=None,
+    def forward(
+        self,
+        input_ids,
+        attention_mask,
+        bass_tgt,
+        melody_tgt,
+        bass_tgt_key_padding_mask=None,
+        melody_tgt_key_padding_mask=None,
     ):
         encoder_out = self.encoder(input_ids, attention_mask)
 
-        memory = self.memory_proj(encoder_out) # (B, T, d_dec)
+        memory = self.memory_proj(encoder_out)  # (B, T, d_dec)
 
         bass_decoder_out = self.bass_decoder(
             bass_tgt,
@@ -500,7 +577,6 @@ class Chord2JointMidiTransformer(nn.Module):
             tgt_key_padding_mask=melody_tgt_key_padding_mask,
             memory=memory,
         )
-
 
         return bass_decoder_out, melody_decoder_out
 
@@ -543,39 +619,40 @@ class Chord2JointMidiTransformer(nn.Module):
 
         return generated_ids_bass, generated_ids_melody
 
-class Chord2JointDecoderMidiTransformer(nn.Module):
 
-    def __init__(self,
-                 encoder,
-                 decoder,
-                 d_model,
-                 vocab_size,
-                 #hidden_size,
-                 #output_dim_a,
-                 #output_dim_b
-                 ):
+class Chord2JointDecoderMidiTransformer(nn.Module):
+    def __init__(
+        self,
+        encoder,
+        decoder,
+        d_model,
+        vocab_size,
+        # hidden_size,
+        # output_dim_a,
+        # output_dim_b
+    ):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.memory_proj = nn.Linear(
-            encoder.token_embedding.embedding_dim,
-            decoder.token_embedding.embedding_dim
+            encoder.token_embedding.embedding_dim, decoder.token_embedding.embedding_dim
         )
         self.bass_head = nn.Linear(d_model, vocab_size)
         self.melody_head = nn.Linear(d_model, vocab_size)
 
-    def forward(self,
-                input_ids,
-                attention_mask,
-                bass_tgt,
-                melody_tgt,
-                bass_tgt_key_padding_mask=None,
-                melody_tgt_key_padding_mask=None,
+    def forward(
+        self,
+        input_ids,
+        attention_mask,
+        bass_tgt,
+        melody_tgt,
+        bass_tgt_key_padding_mask=None,
+        melody_tgt_key_padding_mask=None,
     ):
 
         encoder_out = self.encoder(input_ids, attention_mask)
 
-        memory = self.memory_proj(encoder_out) # (B, T, d_dec)
+        memory = self.memory_proj(encoder_out)  # (B, T, d_dec)
 
         bass_decoder_out = self.decoder(
             bass_tgt,
@@ -635,6 +712,7 @@ class Chord2JointDecoderMidiTransformer(nn.Module):
 
         return generated_ids_bass, generated_ids_melody
 
+
 class Chord2SequentialMidiTransformer(nn.Module):
     def __init__(
         self,
@@ -654,14 +732,23 @@ class Chord2SequentialMidiTransformer(nn.Module):
         first_input_ids,
         second_input_ids,
         first_tgt_key_padding_mask=None,
-        second_tgt_key_padding_mask=None
+        second_tgt_key_padding_mask=None,
     ):
         chord_memory = self.chord_encoder(chord_input_ids, chord_attention_mask)
-        first_logits = self.first_decoder(input_ids = first_input_ids, memory = chord_memory, tgt_key_padding_mask = first_tgt_key_padding_mask)
+        first_logits = self.first_decoder(
+            input_ids=first_input_ids,
+            memory=chord_memory,
+            tgt_key_padding_mask=first_tgt_key_padding_mask,
+        )
         # Use bass memory for melody decoding
-        #input_ids, chord_memory, bass_memory, tgt_key_padding_mask
+        # input_ids, chord_memory, bass_memory, tgt_key_padding_mask
         first_memory = self.first_decoder.token_embedding(first_input_ids)
-        second_logits = self.second_decoder(input_ids = second_input_ids, chord_memory = chord_memory, remi_memory = first_memory, tgt_key_padding_mask = second_tgt_key_padding_mask)
+        second_logits = self.second_decoder(
+            input_ids=second_input_ids,
+            chord_memory=chord_memory,
+            remi_memory=first_memory,
+            tgt_key_padding_mask=second_tgt_key_padding_mask,
+        )
         return first_logits, second_logits
 
     def generate(
@@ -684,36 +771,53 @@ class Chord2SequentialMidiTransformer(nn.Module):
         first_memory = None
         with torch.no_grad():
             for _ in range(1, max_len):
-                first_input_tensor = torch.tensor([first_generated], dtype=torch.long, device=device)
-                first_logits = self.first_decoder(input_ids = first_input_tensor, memory = chord_memory)
+                first_input_tensor = torch.tensor(
+                    [first_generated], dtype=torch.long, device=device
+                )
+                first_logits = self.first_decoder(
+                    input_ids=first_input_tensor, memory=chord_memory
+                )
                 last_first_logits = first_logits[0, -1]
                 if decoding_strategy == "greedy":
                     next_first = int(last_first_logits.argmax())
                 elif decoding_strategy == "top_p":
-                    next_first = int(self.first_decoder.top_p_sample(last_first_logits, p=top_p))
+                    next_first = int(
+                        self.first_decoder.top_p_sample(last_first_logits, p=top_p)
+                    )
                 else:
                     raise ValueError("Unsupported decoding strategy")
                 first_generated.append(next_first)
                 if next_first == first_eos_id:
                     break
-            first_memory = self.first_decoder.token_embedding(torch.tensor([first_generated], dtype=torch.long, device=device))
+            first_memory = self.first_decoder.token_embedding(
+                torch.tensor([first_generated], dtype=torch.long, device=device)
+            )
         # Generate melody sequence conditioned on chord and bass
         second_generated = [second_bos_id]
         with torch.no_grad():
             for _ in range(1, max_len):
-                second_input_tensor = torch.tensor([second_generated], dtype=torch.long, device=device)
-                second_logits = self.second_decoder(input_ids = second_input_tensor, chord_memory = chord_memory, remi_memory = first_memory)
+                second_input_tensor = torch.tensor(
+                    [second_generated], dtype=torch.long, device=device
+                )
+                second_logits = self.second_decoder(
+                    input_ids=second_input_tensor,
+                    chord_memory=chord_memory,
+                    remi_memory=first_memory,
+                )
                 last_second_logits = second_logits[0, -1]
                 if decoding_strategy == "greedy":
                     next_second = int(last_second_logits.argmax())
                 elif decoding_strategy == "top_p":
-                    next_second = int(self.second_decoder.top_p_sample(last_second_logits, p=top_p))
+                    next_second = int(
+                        self.second_decoder.top_p_sample(last_second_logits, p=top_p)
+                    )
                 else:
                     raise ValueError("Unsupported decoding strategy")
                 second_generated.append(next_second)
                 if next_second == second_eos_id:
                     break
         return first_generated, second_generated
+
 
 class Chord2SymmetricMidiTransformer(nn.Module):
     def __init__(self, encoder, symmetric_decoder):
@@ -722,38 +826,52 @@ class Chord2SymmetricMidiTransformer(nn.Module):
         self.decoder = symmetric_decoder
         # project chord dim → decoder dim (if different)
         self.mem_proj = nn.Linear(
-            encoder.token_embedding.embedding_dim,
-            symmetric_decoder.d_model
+            encoder.token_embedding.embedding_dim, symmetric_decoder.d_model
         )
 
-    def forward(self,
-                chord_input_ids, chord_attention_mask,
-                bass_tgt, melody_tgt,
-                bass_tgt_key_padding_mask=None,
-                melody_tgt_key_padding_mask=None):
-        enc = self.encoder(chord_input_ids, chord_attention_mask)   # [B, S, d_enc]
-        memory = self.mem_proj(enc)                        # [B, S, d_dec]
+    def forward(
+        self,
+        chord_input_ids,
+        chord_attention_mask,
+        bass_tgt,
+        melody_tgt,
+        bass_tgt_key_padding_mask=None,
+        melody_tgt_key_padding_mask=None,
+    ):
+        enc = self.encoder(chord_input_ids, chord_attention_mask)  # [B, S, d_enc]
+        memory = self.mem_proj(enc)  # [B, S, d_dec]
 
         logits_bass, logits_melody = self.decoder(
-            bass_ids = bass_tgt,
-            melody_ids = melody_tgt,
-            chord_memory = memory,
-            chord_attention_mask = chord_attention_mask,
+            bass_ids=bass_tgt,
+            melody_ids=melody_tgt,
+            chord_memory=memory,
+            chord_attention_mask=chord_attention_mask,
             bass_tgt_key_padding_mask=bass_tgt_key_padding_mask,
-            melody_tgt_key_padding_mask=melody_tgt_key_padding_mask)
+            melody_tgt_key_padding_mask=melody_tgt_key_padding_mask,
+        )
         return logits_bass, logits_melody
 
     @torch.no_grad()
-    def generate(self, chord_input_ids, chord_attention_mask,
-                 bos_id, eos_id, max_len=128,
-                 decoding_strategy='top_p', top_p=0.9, device=None):
+    def generate(
+        self,
+        chord_input_ids,
+        chord_attention_mask,
+        bos_id,
+        eos_id,
+        max_len=128,
+        decoding_strategy="top_p",
+        top_p=0.9,
+        device=None,
+    ):
         device = device or chord_input_ids.device
         enc = self.encoder(chord_input_ids, chord_attention_mask)
         memory = self.mem_proj(enc)
         return self.decoder.generate(
             memory,
-            bos_id=bos_id, eos_id=eos_id,
+            bos_id=bos_id,
+            eos_id=eos_id,
             max_len=max_len,
             decoding_strategy=decoding_strategy,
             top_p=top_p,
-            device=device)
+            device=device,
+        )
